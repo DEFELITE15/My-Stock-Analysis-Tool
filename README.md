@@ -47,19 +47,6 @@ Then open the local URL it prints (usually http://localhost:8501).
 4. Deploy. You'll get a free public URL, and every page load / ticker search
    fetches live data — no separate "update" step needed.
 
-## Pushing to GitHub
-
-```bash
-git add -A
-git commit -m "Initial Stock Analysis Machine"
-git branch -M main
-git remote add origin https://github.com/<your-username>/stock-analysis-machine.git
-git push -u origin main
-```
-
-(Create the empty repo on github.com first, without a README, then run the
-commands above.)
-
 ## Notes / limitations
 
 - Data comes from Yahoo Finance's free, unofficial API via `yfinance`. It can
@@ -68,3 +55,9 @@ commands above.)
 - Revenue growth is calculated from however many years of annual data Yahoo's
   free tier exposes (typically 3-4 years, sometimes 5).
 - This is a research/screening tool, not financial advice.
+
+## License
+
+All Rights Reserved — see [LICENSE](LICENSE). This code is public for
+portfolio/demonstration purposes only; copying, reuse, or redistribution is
+not permitted without permission.
