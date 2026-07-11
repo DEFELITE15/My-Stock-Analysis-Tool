@@ -18,6 +18,7 @@ class Metrics:
     sector: str | None
     industry: str | None
     price: float | None
+    history: pd.DataFrame
 
     revenue_growth_5y: float | None  # CAGR, as decimal (0.12 = 12%)
     years_of_revenue_data: int
@@ -141,6 +142,7 @@ def build_metrics(data: StockData) -> Metrics:
         sector=info.get("sector"),
         industry=info.get("industry"),
         price=info.get("currentPrice") or info.get("regularMarketPrice"),
+        history=data.history,
         revenue_growth_5y=growth,
         years_of_revenue_data=years,
         gross_margin=info.get("grossMargins"),
