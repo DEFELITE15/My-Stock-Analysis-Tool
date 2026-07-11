@@ -1,7 +1,7 @@
 """
 The Stock Analysis Machine's grading engine.
 
-Grades a stock 0-10 across five categories, each scored *relative to its
+Grades a stock 0-10 across six categories, each scored *relative to its
 industry peers* rather than fixed thresholds (a 15% net margin means
 something very different for a software company than for a grocery chain).
 Growth-adjusted valuation (PEG-style logic) avoids unfairly punishing
@@ -18,7 +18,7 @@ Category weights (sum to 10):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .metrics import Metrics
 
@@ -33,16 +33,42 @@ WEIGHTS = {
 
 
 @dataclass
+class CategoryDetail:
+    key: str
+    title: str
+    what_it_measures: str
+    why_it_matters: str
+    your_value: str
+    benchmark_value: str
+    verdict: str  # Excellent / Strong / Average / Weak / Poor
+    explanation: str  # plain-language sentence on how this score was reached
+    points: float
+    max_points: float
+
+
+@dataclass
 class StockGrade:
     metrics: Metrics
     category_scores: dict  # category -> points earned
     total_score: float  # 0-10
     signal: str  # BUY / HOLD / SELL
-    notes: list  # human-readable explanations
+    details: list = field(default_factory=list)  # list[CategoryDetail]
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
+
+
+def _verdict(pct: float) -> str:
+    if pct >= 0.85:
+        return "Excellent"
+    if pct >= 0.65:
+        return "Strong"
+    if pct >= 0.45:
+        return "Average"
+    if pct >= 0.2:
+        return "Weak"
+    return "Poor"
 
 
 def _relative_score(
@@ -80,120 +106,295 @@ def _relative_score(
     return max_points
 
 
-def _score_growth(m: Metrics, notes: list) -> float:
+def _fmt_pct(v: float | None) -> str:
+    return f"{v:.1%}" if v is not None else "N/A"
+
+
+def _score_growth(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["growth"]
+    span = f"{max(m.years_of_revenue_data - 1, 0)}-year" if m.years_of_revenue_data else "N/A"
+
     if m.revenue_growth_5y is None:
-        notes.append("Growth: no revenue history available, neutral credit given.")
-        return round(max_pts * 0.5, 3)
+        score = round(max_pts * 0.5, 3)
+        return score, CategoryDetail(
+            key="growth",
+            title="Revenue Growth",
+            what_it_measures="How fast the company's revenue has grown, annually, over the years of data available (up to 5).",
+            why_it_matters="Consistent revenue growth funds future earnings and often justifies a higher valuation. Stalling or shrinking revenue is an early warning sign.",
+            your_value="No revenue history available",
+            benchmark_value="N/A",
+            verdict="Average",
+            explanation="Not enough financial history was available to calculate a growth rate, so this category was given neutral (half) credit instead of being penalized.",
+            points=score,
+            max_points=max_pts,
+        )
 
     benchmark = m.peer_avg_revenue_growth
     score = _relative_score(m.revenue_growth_5y, benchmark, max_pts, higher_is_better=True)
-    span = f"{m.years_of_revenue_data - 1}-yr" if m.years_of_revenue_data else "N/A"
+    pct = score / max_pts
+
     if benchmark is not None:
-        notes.append(
-            f"Growth: {span} revenue CAGR {m.revenue_growth_5y:.1%} vs. "
-            f"industry avg {benchmark:.1%} -> {score:.2f}/{max_pts} pts."
+        comparison = "faster than" if m.revenue_growth_5y > benchmark else "slower than"
+        explanation = (
+            f"Over the last {span} period of available financials, revenue grew at a "
+            f"{m.revenue_growth_5y:.1%} annual rate ({comparison} the {benchmark:.1%} "
+            f"average of live industry peers). Growth at 2x the peer average or higher "
+            f"earns full points; growth below the peer average earns proportionally less."
         )
+        benchmark_str = f"{benchmark:.1%} (industry avg)"
     else:
-        notes.append(
-            f"Growth: {span} revenue CAGR {m.revenue_growth_5y:.1%}, no peer "
-            f"data available -> neutral {score:.2f}/{max_pts} pts."
+        explanation = (
+            f"Revenue grew at a {m.revenue_growth_5y:.1%} annual rate over the last "
+            f"{span}, but no peer data was available for comparison, so this earned "
+            f"neutral credit based on the raw growth rate alone."
         )
-    return score
+        benchmark_str = "N/A"
+
+    return score, CategoryDetail(
+        key="growth",
+        title="Revenue Growth",
+        what_it_measures="How fast the company's revenue has grown, annually, over the years of data available (up to 5).",
+        why_it_matters="Consistent revenue growth funds future earnings and often justifies a higher valuation. Stalling or shrinking revenue is an early warning sign.",
+        your_value=f"{m.revenue_growth_5y:.1%} / yr ({span} CAGR)",
+        benchmark_value=benchmark_str,
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=max_pts,
+    )
 
 
-def _score_profitability(m: Metrics, notes: list) -> float:
+def _score_profitability(m: Metrics) -> tuple[float, CategoryDetail]:
     total_max = WEIGHTS["profitability"]
     gross_max, op_max, net_max = total_max * 0.3, total_max * 0.3, total_max * 0.4
 
     gross = _relative_score(m.gross_margin, m.peer_avg_gross_margin, gross_max)
     op = _relative_score(m.operating_margin, m.peer_avg_operating_margin, op_max)
     net = _relative_score(m.net_margin, m.peer_avg_net_margin, net_max)
-
     score = gross + op + net
-    notes.append(
-        f"Profitability: gross {_fmt_pct(m.gross_margin)}, operating "
-        f"{_fmt_pct(m.operating_margin)}, net {_fmt_pct(m.net_margin)} "
-        f"vs. industry -> {score:.2f}/{total_max} pts."
+    pct = score / total_max if total_max else 0
+
+    peer_gross = _fmt_pct(m.peer_avg_gross_margin)
+    peer_op = _fmt_pct(m.peer_avg_operating_margin)
+    peer_net = _fmt_pct(m.peer_avg_net_margin)
+
+    explanation = (
+        f"Gross margin (revenue left after cost of goods sold) was {_fmt_pct(m.gross_margin)} "
+        f"vs. an industry average of {peer_gross}. Operating margin (after running the "
+        f"business) was {_fmt_pct(m.operating_margin)} vs. {peer_op}. Net margin (the "
+        f"actual bottom-line profit per dollar of sales) was {_fmt_pct(m.net_margin)} vs. "
+        f"{peer_net}. Net margin is weighted most heavily since it reflects true profitability."
     )
-    return score
+
+    return score, CategoryDetail(
+        key="profitability",
+        title="Profitability",
+        what_it_measures="How much of every dollar in sales the company keeps as profit, at three levels: gross, operating, and net margin.",
+        why_it_matters="Higher margins mean the business runs more efficiently and has more cushion to absorb rising costs or competition without losing money.",
+        your_value=f"Gross {_fmt_pct(m.gross_margin)} · Op {_fmt_pct(m.operating_margin)} · Net {_fmt_pct(m.net_margin)}",
+        benchmark_value=f"Gross {peer_gross} · Op {peer_op} · Net {peer_net} (industry avg)",
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=total_max,
+    )
 
 
-def _score_financial_health(m: Metrics, notes: list) -> float:
+def _score_financial_health(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["financial_health"]
     score = _relative_score(
         m.debt_to_equity, m.peer_avg_debt_to_equity, max_pts, higher_is_better=False
     )
+    pct = score / max_pts if max_pts else 0
+
     if m.debt_to_equity is None:
-        notes.append("Financial health: no debt data available, neutral credit given.")
+        explanation = "No debt data was available, so this category was given neutral (half) credit instead of being penalized."
+        your_value = "N/A"
+        benchmark_value = "N/A"
     else:
-        bench = f"{m.peer_avg_debt_to_equity:.2f}" if m.peer_avg_debt_to_equity else "N/A"
-        notes.append(
-            f"Financial health: D/E {m.debt_to_equity:.2f} vs. industry avg "
-            f"{bench} -> {score:.2f}/{max_pts} pts."
-        )
-    return score
+        bench = m.peer_avg_debt_to_equity
+        bench_str = f"{bench:.2f}" if bench else "N/A"
+        if bench:
+            comparison = "less leveraged than" if m.debt_to_equity < bench else "more leveraged than"
+            explanation = (
+                f"Debt-to-Equity is {m.debt_to_equity:.2f} (meaning ${m.debt_to_equity:.2f} of "
+                f"debt for every $1 of shareholder equity), which is {comparison} the industry "
+                f"average of {bench:.2f}. Carrying half the industry's typical debt load or less "
+                f"earns full points; carrying double or more earns zero."
+            )
+        else:
+            explanation = (
+                f"Debt-to-Equity is {m.debt_to_equity:.2f}, but no peer data was available for "
+                f"comparison, so this earned neutral credit."
+            )
+        your_value = f"{m.debt_to_equity:.2f}"
+        benchmark_value = f"{bench_str} (industry avg)"
+
+    return score, CategoryDetail(
+        key="financial_health",
+        title="Financial Health",
+        what_it_measures="How much debt the company carries relative to shareholder equity (Debt-to-Equity ratio).",
+        why_it_matters="Excess debt raises risk — interest payments eat into profits, and heavily indebted companies are more vulnerable during downturns or when interest rates rise.",
+        your_value=your_value,
+        benchmark_value=benchmark_value,
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=max_pts,
+    )
 
 
-def _score_valuation(m: Metrics, notes: list) -> float:
+def _score_valuation(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["valuation"]
-    if m.pe_ratio is None or m.pe_ratio <= 0:
-        notes.append("Valuation: no positive P/E available (no earnings?), scored 0.")
-        return 0.0
 
-    benchmark = m.peer_avg_pe_ratio
-    if benchmark and m.revenue_growth_5y is not None and m.peer_avg_revenue_growth:
-        # PEG-style adjustment: a faster grower than its peers earns the
-        # right to trade at a higher P/E without being penalized for it.
+    if m.pe_ratio is None or m.pe_ratio <= 0:
+        return 0.0, CategoryDetail(
+            key="valuation",
+            title="Valuation",
+            what_it_measures="Whether the stock's price is reasonable relative to its earnings (P/E ratio), adjusted for how fast it's growing compared to peers.",
+            why_it_matters="A cheap stock isn't automatically a good deal, and an expensive one isn't automatically bad — what matters is whether the price is fair given the growth and quality you're paying for.",
+            your_value="No positive P/E (no earnings, or data unavailable)",
+            benchmark_value="N/A",
+            verdict="Poor",
+            explanation="The company has no positive P/E ratio available, typically meaning it isn't currently profitable. Without positive earnings this category scores zero, since valuation can't be meaningfully assessed on price-to-earnings alone.",
+            points=0.0,
+            max_points=max_pts,
+        )
+
+    raw_benchmark = m.peer_avg_pe_ratio
+    benchmark = raw_benchmark
+    growth_note = ""
+    if raw_benchmark and m.revenue_growth_5y is not None and m.peer_avg_revenue_growth:
         growth_ratio = (
             (1 + m.revenue_growth_5y) / (1 + m.peer_avg_revenue_growth)
             if m.peer_avg_revenue_growth > -1
             else 1.0
         )
         adjustment = _clamp(growth_ratio, 0.7, 1.5)
-        benchmark = benchmark * adjustment
+        benchmark = raw_benchmark * adjustment
+        if adjustment > 1.02:
+            growth_note = (
+                f" Because this stock is growing faster than its peers, the fair-value "
+                f"benchmark was raised from {raw_benchmark:.1f} to {benchmark:.1f} "
+                f"(similar to how the PEG ratio rewards growth) so it isn't unfairly "
+                f"penalized for a higher price tag."
+            )
+        elif adjustment < 0.98:
+            growth_note = (
+                f" Because this stock is growing slower than its peers, the fair-value "
+                f"benchmark was lowered from {raw_benchmark:.1f} to {benchmark:.1f}."
+            )
 
     score = _relative_score(m.pe_ratio, benchmark, max_pts, higher_is_better=False)
+    pct = score / max_pts if max_pts else 0
     bench_str = f"{benchmark:.1f}" if benchmark else "N/A"
-    notes.append(
-        f"Valuation: P/E {m.pe_ratio:.1f} vs. growth-adjusted industry "
-        f"benchmark {bench_str} -> {score:.2f}/{max_pts} pts."
+
+    if benchmark:
+        comparison = "cheaper than" if m.pe_ratio < benchmark else "more expensive than"
+        explanation = (
+            f"The stock trades at a P/E of {m.pe_ratio:.1f}, which is {comparison} its "
+            f"growth-adjusted fair-value benchmark of {bench_str}.{growth_note}"
+        )
+    else:
+        explanation = f"The stock trades at a P/E of {m.pe_ratio:.1f}, but no peer data was available for comparison."
+
+    return score, CategoryDetail(
+        key="valuation",
+        title="Valuation",
+        what_it_measures="Whether the stock's price is reasonable relative to its earnings (P/E ratio), adjusted for how fast it's growing compared to peers.",
+        why_it_matters="A cheap stock isn't automatically a good deal, and an expensive one isn't automatically bad — what matters is whether the price is fair given the growth and quality you're paying for.",
+        your_value=f"P/E {m.pe_ratio:.1f}",
+        benchmark_value=f"{bench_str} (growth-adjusted industry avg)",
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=max_pts,
     )
-    return score
 
 
-def _score_dividend(m: Metrics, notes: list) -> float:
+def _score_dividend(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["dividend"]
-    if not m.dividend_yield:
-        notes.append("Dividend: no dividend paid, 0 pts (not penalized elsewhere).")
-        return 0.0
 
-    yield_score = _relative_score(
-        m.dividend_yield, m.peer_avg_dividend_yield, max_pts * 0.5
-    )
+    if not m.dividend_yield:
+        return 0.0, CategoryDetail(
+            key="dividend",
+            title="Dividend",
+            what_it_measures="The dividend yield (cash paid back to shareholders as a % of share price) and how many consecutive years the dividend has held steady or grown.",
+            why_it_matters="A rising, reliable dividend often signals financial discipline and shareholder-friendly management. It's a bonus, not a requirement — plenty of great growth companies pay no dividend at all.",
+            your_value="No dividend paid",
+            benchmark_value="N/A",
+            verdict="Poor",
+            explanation="This company doesn't currently pay a dividend, so it earns 0 of the available dividend points. This is not held against it anywhere else in the grade — it's simply a missed bonus, common for growth-focused companies reinvesting profits instead.",
+            points=0.0,
+            max_points=max_pts,
+        )
+
+    yield_score = _relative_score(m.dividend_yield, m.peer_avg_dividend_yield, max_pts * 0.5)
     streak_score = min(max_pts * 0.5, (m.dividend_streak_years / 10) * (max_pts * 0.5))
     score = yield_score + streak_score
-    notes.append(
-        f"Dividend: yield {m.dividend_yield:.2%}, {m.dividend_streak_years}yr "
-        f"non-decreasing streak -> {score:.2f}/{max_pts} pts."
+    pct = score / max_pts if max_pts else 0
+
+    peer_yield = f"{m.peer_avg_dividend_yield:.2%}" if m.peer_avg_dividend_yield else "N/A"
+    explanation = (
+        f"Dividend yield is {m.dividend_yield:.2%} vs. an industry average of {peer_yield} "
+        f"(half the category's points). It has paid a flat-or-growing dividend for "
+        f"{m.dividend_streak_years} consecutive year(s) — a 10-year streak earns full "
+        f"credit on the consistency half of this category."
     )
-    return score
+
+    return score, CategoryDetail(
+        key="dividend",
+        title="Dividend",
+        what_it_measures="The dividend yield (cash paid back to shareholders as a % of share price) and how many consecutive years the dividend has held steady or grown.",
+        why_it_matters="A rising, reliable dividend often signals financial discipline and shareholder-friendly management. It's a bonus, not a requirement — plenty of great growth companies pay no dividend at all.",
+        your_value=f"{m.dividend_yield:.2%} yield, {m.dividend_streak_years}yr streak",
+        benchmark_value=f"{peer_yield} (industry avg)",
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=max_pts,
+    )
 
 
-def _score_liquidity(m: Metrics, notes: list) -> float:
+def _score_liquidity(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["liquidity"]
+
     if not m.avg_volume:
-        notes.append("Liquidity: no volume data available, neutral credit given.")
-        return round(max_pts * 0.5, 3)
+        score = round(max_pts * 0.5, 3)
+        return score, CategoryDetail(
+            key="liquidity",
+            title="Liquidity",
+            what_it_measures="Average daily trading volume — how many shares change hands per day.",
+            why_it_matters="Highly-traded (liquid) stocks are easier to buy and sell at a fair price. Thinly-traded stocks can have unpredictable price swings and wide bid-ask spreads.",
+            your_value="No volume data available",
+            benchmark_value="300,000 shares/day floor",
+            verdict="Average",
+            explanation="No trading volume data was available, so this category was given neutral (half) credit.",
+            points=score,
+            max_points=max_pts,
+        )
 
     floor_volume = 300_000  # below this, thin trading can distort price signals
     score = round(_clamp(m.avg_volume / floor_volume, 0, 1) * max_pts, 3)
-    notes.append(f"Liquidity: avg volume {m.avg_volume:,.0f} -> {score:.2f}/{max_pts} pts.")
-    return score
+    pct = score / max_pts if max_pts else 0
+    explanation = (
+        f"Average daily volume is {m.avg_volume:,.0f} shares. This category treats "
+        f"{floor_volume:,.0f} shares/day as the minimum for healthy liquidity — at or "
+        f"above that, it earns full points; below it, points scale down proportionally."
+    )
 
-
-def _fmt_pct(v: float | None) -> str:
-    return f"{v:.1%}" if v is not None else "N/A"
+    return score, CategoryDetail(
+        key="liquidity",
+        title="Liquidity",
+        what_it_measures="Average daily trading volume — how many shares change hands per day.",
+        why_it_matters="Highly-traded (liquid) stocks are easier to buy and sell at a fair price. Thinly-traded stocks can have unpredictable price swings and wide bid-ask spreads.",
+        your_value=f"{m.avg_volume:,.0f} shares/day",
+        benchmark_value=f"{floor_volume:,.0f} shares/day floor",
+        verdict=_verdict(pct),
+        explanation=explanation,
+        points=score,
+        max_points=max_pts,
+    )
 
 
 def _signal_for(total: float) -> str:
@@ -205,15 +406,22 @@ def _signal_for(total: float) -> str:
 
 
 def grade_stock(m: Metrics) -> StockGrade:
-    notes: list = []
-    scores = {
-        "growth": _score_growth(m, notes),
-        "profitability": _score_profitability(m, notes),
-        "financial_health": _score_financial_health(m, notes),
-        "valuation": _score_valuation(m, notes),
-        "dividend": _score_dividend(m, notes),
-        "liquidity": _score_liquidity(m, notes),
-    }
+    scorers = [
+        _score_growth,
+        _score_profitability,
+        _score_financial_health,
+        _score_valuation,
+        _score_dividend,
+        _score_liquidity,
+    ]
+
+    scores = {}
+    details = []
+    for scorer in scorers:
+        score, detail = scorer(m)
+        scores[detail.key] = score
+        details.append(detail)
+
     total = round(sum(scores.values()), 2)
     total = _clamp(total, 0, 10)
     return StockGrade(
@@ -221,5 +429,5 @@ def grade_stock(m: Metrics) -> StockGrade:
         category_scores=scores,
         total_score=total,
         signal=_signal_for(total),
-        notes=notes,
+        details=details,
     )
