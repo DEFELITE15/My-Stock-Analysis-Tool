@@ -17,9 +17,9 @@ import streamlit as st
 
 from src.data_fetcher import fetch_stock_data
 from src.fund_metrics import FundMetrics, build_fund_metrics, is_fund
-from src.fund_scoring import WEIGHTS_FUND, grade_fund
+from src.fund_scoring import grade_fund
 from src.metrics import build_metrics
-from src.scoring import WEIGHTS, grade_stock
+from src.scoring import SIGNAL_THRESHOLDS, grade_stock
 
 st.set_page_config(page_title="Stock Analysis Machine", page_icon="📈", layout="wide")
 
@@ -185,23 +185,28 @@ def _cached_benchmark(_cache_bust: int):
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def _cached_analysis(ticker: str, _cache_bust: int):
+def _cached_metrics(ticker: str, _cache_bust: int):
+    """Fetches + builds metrics only (the expensive, network-bound part).
+    Grading is cheap and re-run outside the cache so switching risk
+    tolerance doesn't require a re-fetch."""
     data = fetch_stock_data(ticker)
 
     if is_fund(data.info):
         benchmark = data if ticker == "SPY" else _cached_benchmark(_cache_bust)
-        metrics = build_fund_metrics(data, benchmark)
-        return grade_fund(metrics)
+        return build_fund_metrics(data, benchmark)
 
-    metrics = build_metrics(data)
-    return grade_stock(metrics)
+    return build_metrics(data)
 
 
-def run_analysis(ticker: str, force_refresh: bool):
+def run_analysis(ticker: str, force_refresh: bool, risk_tolerance: str):
     if force_refresh:
-        _cached_analysis.clear()
+        _cached_metrics.clear()
     cache_bust = int(time.time() // CACHE_TTL_SECONDS)
-    return _cached_analysis(ticker.upper().strip(), cache_bust)
+    metrics = _cached_metrics(ticker.upper().strip(), cache_bust)
+
+    if isinstance(metrics, FundMetrics):
+        return grade_fund(metrics, risk_tolerance)
+    return grade_stock(metrics, risk_tolerance)
 
 
 def metric_card(label: str, value: str, sub: str = ""):
@@ -325,10 +330,20 @@ with button_col:
 with refresh_col:
     force_refresh = st.checkbox("Force fresh data", value=False, help="Bypass the 15-min cache and re-fetch everything now.")
 
+RISK_LABELS = {"Low": "low", "Medium": "medium", "High": "high"}
+RISK_HELP = (
+    "Re-weights the scoring categories and shifts the BUY/HOLD/SELL bar to match how much risk you're "
+    "willing to take on. Low tilts toward financial health, dividends, and low fees; High tilts toward "
+    "growth and performance upside. Doesn't change how any individual metric is measured -- only how "
+    "much each category counts, and how strict the signal is."
+)
+risk_label = st.radio("Risk tolerance", list(RISK_LABELS.keys()), index=1, horizontal=True, help=RISK_HELP)
+risk_tolerance = RISK_LABELS[risk_label]
+
 if analyze_clicked and ticker_input:
     with st.spinner(f"Fetching live data for {ticker_input}..."):
         try:
-            grade = run_analysis(ticker_input, force_refresh)
+            grade = run_analysis(ticker_input, force_refresh, risk_tolerance)
         except ValueError as e:
             st.error(str(e))
             st.stop()
@@ -340,7 +355,8 @@ if analyze_clicked and ticker_input:
     is_fund_result = isinstance(m, FundMetrics)
     style = SIGNAL_STYLE[grade.signal]
     category_titles = {d.key: d.title for d in grade.details}
-    weights = WEIGHTS_FUND if is_fund_result else WEIGHTS
+    weights = grade.weights
+    buy_at, hold_at = SIGNAL_THRESHOLDS[grade.risk_tolerance]
 
     name = m.name if is_fund_result else m.company_name
     name = name or m.ticker
@@ -375,9 +391,12 @@ if analyze_clicked and ticker_input:
     with signal_col:
         st.markdown(
             f"""
-            <div class="sam-card" style="display:flex; align-items:center; justify-content:center;">
+            <div class="sam-card" style="display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0.4rem;">
                 <span class="sam-signal-badge" style="color:{style['color']}; background:{style['bg']};">
                     {style['emoji']} {grade.signal}
+                </span>
+                <span style="font-size:0.72rem; color:{TEXT_MUTED};">
+                    {risk_label} risk mode &middot; BUY at {buy_at:.1f}+ &middot; SELL below {hold_at:.1f}
                 </span>
             </div>
             """,

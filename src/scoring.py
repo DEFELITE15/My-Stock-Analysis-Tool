@@ -7,13 +7,24 @@ something very different for a software company than for a grocery chain).
 Growth-adjusted valuation (PEG-style logic) avoids unfairly punishing
 high-growth names for a higher P/E.
 
-Category weights (sum to 10):
+Category weights (sum to 10, "medium" risk tolerance -- the default):
   Growth (revenue CAGR vs. industry)               2.5
   Profitability (margins + ROE/ROA)                2.5
   Financial health (debt-to-equity + FCF coverage) 2.0
   Valuation (P/E, growth-adjusted)                 1.5
   Dividend (yield + consistency)                   1.0
   Liquidity (avg. volume)                          0.5
+
+Risk tolerance mode re-weights those same six categories and shifts the
+BUY/HOLD/SELL thresholds, without changing how any individual category is
+scored:
+  - Low risk tilts weight toward financial health, dividends, and
+    profitability (stability/downside protection) and raises the bar for a
+    BUY signal.
+  - High risk tilts weight toward growth and valuation upside and lowers the
+    bar for a BUY signal, accepting more volatility for more potential
+    reward.
+  - Medium is the balanced default above.
 """
 
 from __future__ import annotations
@@ -29,6 +40,35 @@ WEIGHTS = {
     "valuation": 1.5,
     "dividend": 1.0,
     "liquidity": 0.5,
+}
+
+RISK_PROFILES = {
+    "low": {
+        "growth": 1.5,
+        "profitability": 2.5,
+        "financial_health": 3.0,
+        "valuation": 1.0,
+        "dividend": 1.5,
+        "liquidity": 0.5,
+    },
+    "medium": WEIGHTS,
+    "high": {
+        "growth": 3.5,
+        "profitability": 2.0,
+        "financial_health": 1.0,
+        "valuation": 2.5,
+        "dividend": 0.5,
+        "liquidity": 0.5,
+    },
+}
+
+# (buy_at, hold_at) total-score thresholds. Low risk tolerance demands a
+# bigger margin of safety before signaling BUY; high risk tolerance accepts a
+# lower bar in exchange for more upside potential.
+SIGNAL_THRESHOLDS = {
+    "low": (8.5, 6.0),
+    "medium": (8.0, 5.0),
+    "high": (7.0, 4.0),
 }
 
 
@@ -53,6 +93,8 @@ class StockGrade:
     total_score: float  # 0-10
     signal: str  # BUY / HOLD / SELL
     details: list = field(default_factory=list)  # list[CategoryDetail]
+    risk_tolerance: str = "medium"  # low / medium / high
+    weights: dict = field(default_factory=lambda: dict(WEIGHTS))
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -110,8 +152,8 @@ def _fmt_pct(v: float | None) -> str:
     return f"{v:.1%}" if v is not None else "N/A"
 
 
-def _score_growth(m: Metrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS["growth"]
+def _score_growth(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["growth"]
     span = f"{max(m.years_of_revenue_data - 1, 0)}-year" if m.years_of_revenue_data else "N/A"
 
     if m.revenue_growth_5y is None:
@@ -175,8 +217,8 @@ def _score_growth(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_profitability(m: Metrics) -> tuple[float, CategoryDetail]:
-    total_max = WEIGHTS["profitability"]
+def _score_profitability(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    total_max = weights["profitability"]
     # Margins: 55% of the category. Capital efficiency (ROE/ROA): 45%.
     gross_max, op_max, net_max = total_max * 0.15, total_max * 0.15, total_max * 0.25
     roe_max, roa_max = total_max * 0.25, total_max * 0.2
@@ -221,8 +263,8 @@ def _score_profitability(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_financial_health(m: Metrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS["financial_health"]
+def _score_financial_health(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["financial_health"]
     debt_max = max_pts * 0.6
     cash_max = max_pts * 0.4
 
@@ -294,8 +336,8 @@ def _score_financial_health(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_valuation(m: Metrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS["valuation"]
+def _score_valuation(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["valuation"]
 
     if m.pe_ratio is None or m.pe_ratio <= 0:
         return 0.0, CategoryDetail(
@@ -362,8 +404,8 @@ def _score_valuation(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_dividend(m: Metrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS["dividend"]
+def _score_dividend(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["dividend"]
 
     if not m.dividend_yield:
         return 0.0, CategoryDetail(
@@ -406,8 +448,8 @@ def _score_dividend(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_liquidity(m: Metrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS["liquidity"]
+def _score_liquidity(m: Metrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["liquidity"]
 
     if not m.avg_volume:
         score = round(max_pts * 0.5, 3)
@@ -447,15 +489,17 @@ def _score_liquidity(m: Metrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _signal_for(total: float) -> str:
-    if total >= 8.0:
+def _signal_for(total: float, risk_tolerance: str = "medium") -> str:
+    buy_at, hold_at = SIGNAL_THRESHOLDS.get(risk_tolerance, SIGNAL_THRESHOLDS["medium"])
+    if total >= buy_at:
         return "BUY"
-    if total >= 5.0:
+    if total >= hold_at:
         return "HOLD"
     return "SELL"
 
 
-def grade_stock(m: Metrics) -> StockGrade:
+def grade_stock(m: Metrics, risk_tolerance: str = "medium") -> StockGrade:
+    weights = RISK_PROFILES.get(risk_tolerance, WEIGHTS)
     scorers = [
         _score_growth,
         _score_profitability,
@@ -468,7 +512,7 @@ def grade_stock(m: Metrics) -> StockGrade:
     scores = {}
     details = []
     for scorer in scorers:
-        score, detail = scorer(m)
+        score, detail = scorer(m, weights)
         scores[detail.key] = score
         details.append(detail)
 
@@ -478,6 +522,8 @@ def grade_stock(m: Metrics) -> StockGrade:
         metrics=m,
         category_scores=scores,
         total_score=total,
-        signal=_signal_for(total),
+        signal=_signal_for(total, risk_tolerance),
         details=details,
+        risk_tolerance=risk_tolerance,
+        weights=weights,
     )

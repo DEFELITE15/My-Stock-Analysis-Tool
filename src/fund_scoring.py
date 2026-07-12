@@ -5,11 +5,18 @@ Funds are scored differently from individual stocks -- there's no revenue,
 margin, or debt to analyze. Instead this benchmarks cost, performance, and
 yield against a live S&P 500 ETF (SPY) proxy, fetched fresh every run.
 
-Category weights (sum to 10):
+Category weights (sum to 10, "medium" risk tolerance -- the default):
   Cost (expense ratio, lower is better)      3.0
   Performance (YTD / 3yr / 5yr vs. SPY)      4.5
   Dividend yield (vs. SPY)                   1.0
   Liquidity (avg. daily volume)              1.5
+
+Risk tolerance mode re-weights those same four categories and shifts the
+BUY/HOLD/SELL thresholds (see src/scoring.py for the shared philosophy):
+  - Low risk tilts weight toward cost and liquidity (the two most
+    predictable, lowest-volatility factors) and raises the bar for BUY.
+  - High risk tilts weight toward performance and lowers the bar for BUY,
+    prioritizing return over fees.
 """
 
 from __future__ import annotations
@@ -24,13 +31,29 @@ WEIGHTS_FUND = {
     "liquidity": 1.5,
 }
 
+RISK_PROFILES_FUND = {
+    "low": {
+        "cost": 4.0,
+        "performance": 3.0,
+        "dividend": 1.0,
+        "liquidity": 2.0,
+    },
+    "medium": WEIGHTS_FUND,
+    "high": {
+        "cost": 2.0,
+        "performance": 6.0,
+        "dividend": 0.5,
+        "liquidity": 1.5,
+    },
+}
+
 
 def _fmt_pct(v: float | None) -> str:
     return f"{v:.1%}" if v is not None else "N/A"
 
 
-def _score_cost(fm: FundMetrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS_FUND["cost"]
+def _score_cost(fm: FundMetrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["cost"]
 
     if fm.expense_ratio is None:
         score = round(max_pts * 0.5, 3)
@@ -77,9 +100,11 @@ def _score_cost(fm: FundMetrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_performance(fm: FundMetrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS_FUND["performance"]
-    ytd_max, three_max, five_max = 1.0, 2.0, 1.5  # 3yr weighted heaviest -- smooths short-term noise
+def _score_performance(fm: FundMetrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["performance"]
+    # Split proportionally across YTD / 3yr / 5yr, 3yr weighted heaviest
+    # (smooths out short-term noise) regardless of the overall category weight.
+    ytd_max, three_max, five_max = max_pts * (1 / 4.5), max_pts * (2 / 4.5), max_pts * (1.5 / 4.5)
 
     ytd_score = _relative_score(fm.ytd_return, fm.benchmark_ytd_return, ytd_max, higher_is_better=True)
     three_score = _relative_score(fm.three_year_return, fm.benchmark_three_year_return, three_max, higher_is_better=True)
@@ -111,8 +136,8 @@ def _score_performance(fm: FundMetrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_dividend(fm: FundMetrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS_FUND["dividend"]
+def _score_dividend(fm: FundMetrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["dividend"]
 
     if not fm.dividend_yield:
         return 0.0, CategoryDetail(
@@ -150,8 +175,8 @@ def _score_dividend(fm: FundMetrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def _score_liquidity(fm: FundMetrics) -> tuple[float, CategoryDetail]:
-    max_pts = WEIGHTS_FUND["liquidity"]
+def _score_liquidity(fm: FundMetrics, weights: dict) -> tuple[float, CategoryDetail]:
+    max_pts = weights["liquidity"]
 
     if not fm.avg_volume:
         score = round(max_pts * 0.5, 3)
@@ -191,13 +216,14 @@ def _score_liquidity(fm: FundMetrics) -> tuple[float, CategoryDetail]:
     )
 
 
-def grade_fund(fm: FundMetrics) -> StockGrade:
+def grade_fund(fm: FundMetrics, risk_tolerance: str = "medium") -> StockGrade:
+    weights = RISK_PROFILES_FUND.get(risk_tolerance, WEIGHTS_FUND)
     scorers = [_score_cost, _score_performance, _score_dividend, _score_liquidity]
 
     scores = {}
     details = []
     for scorer in scorers:
-        score, detail = scorer(fm)
+        score, detail = scorer(fm, weights)
         scores[detail.key] = score
         details.append(detail)
 
@@ -207,6 +233,8 @@ def grade_fund(fm: FundMetrics) -> StockGrade:
         metrics=fm,
         category_scores=scores,
         total_score=total,
-        signal=_signal_for(total),
+        signal=_signal_for(total, risk_tolerance),
         details=details,
+        risk_tolerance=risk_tolerance,
+        weights=weights,
     )
