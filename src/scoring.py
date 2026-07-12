@@ -8,12 +8,12 @@ Growth-adjusted valuation (PEG-style logic) avoids unfairly punishing
 high-growth names for a higher P/E.
 
 Category weights (sum to 10):
-  Growth (revenue CAGR vs. industry)     2.5
-  Profitability (gross/op/net margin)    2.5
-  Financial health (debt-to-equity)      2.0
-  Valuation (P/E, growth-adjusted)       1.5
-  Dividend (yield + consistency)         1.0
-  Liquidity (avg. volume)                0.5
+  Growth (revenue CAGR vs. industry)               2.5
+  Profitability (margins + ROE/ROA)                2.5
+  Financial health (debt-to-equity + FCF coverage) 2.0
+  Valuation (P/E, growth-adjusted)                 1.5
+  Dividend (yield + consistency)                   1.0
+  Liquidity (avg. volume)                          0.5
 """
 
 from __future__ import annotations
@@ -166,33 +166,43 @@ def _score_growth(m: Metrics) -> tuple[float, CategoryDetail]:
 
 def _score_profitability(m: Metrics) -> tuple[float, CategoryDetail]:
     total_max = WEIGHTS["profitability"]
-    gross_max, op_max, net_max = total_max * 0.3, total_max * 0.3, total_max * 0.4
+    # Margins: 55% of the category. Capital efficiency (ROE/ROA): 45%.
+    gross_max, op_max, net_max = total_max * 0.15, total_max * 0.15, total_max * 0.25
+    roe_max, roa_max = total_max * 0.25, total_max * 0.2
 
     gross = _relative_score(m.gross_margin, m.peer_avg_gross_margin, gross_max)
     op = _relative_score(m.operating_margin, m.peer_avg_operating_margin, op_max)
     net = _relative_score(m.net_margin, m.peer_avg_net_margin, net_max)
-    score = gross + op + net
+    roe = _relative_score(m.return_on_equity, m.peer_avg_roe, roe_max)
+    roa = _relative_score(m.return_on_assets, m.peer_avg_roa, roa_max)
+    score = gross + op + net + roe + roa
     pct = score / total_max if total_max else 0
 
     peer_gross = _fmt_pct(m.peer_avg_gross_margin)
     peer_op = _fmt_pct(m.peer_avg_operating_margin)
     peer_net = _fmt_pct(m.peer_avg_net_margin)
+    peer_roe = _fmt_pct(m.peer_avg_roe)
+    peer_roa = _fmt_pct(m.peer_avg_roa)
 
     explanation = (
         f"Gross margin (revenue left after cost of goods sold) was {_fmt_pct(m.gross_margin)} "
         f"vs. an industry average of {peer_gross}. Operating margin (after running the "
         f"business) was {_fmt_pct(m.operating_margin)} vs. {peer_op}. Net margin (the "
         f"actual bottom-line profit per dollar of sales) was {_fmt_pct(m.net_margin)} vs. "
-        f"{peer_net}. Net margin is weighted most heavily since it reflects true profitability."
+        f"{peer_net}. Return on Equity (profit generated per dollar of shareholder capital) "
+        f"was {_fmt_pct(m.return_on_equity)} vs. {peer_roe}, and Return on Assets (profit "
+        f"generated per dollar of total assets, independent of how much is debt-funded) was "
+        f"{_fmt_pct(m.return_on_assets)} vs. {peer_roa}. Net margin and ROE carry the most "
+        f"weight since they best capture bottom-line profitability and capital efficiency."
     )
 
     return score, CategoryDetail(
         key="profitability",
         title="Profitability",
-        what_it_measures="How much of every dollar in sales the company keeps as profit, at three levels: gross, operating, and net margin.",
-        why_it_matters="Higher margins mean the business runs more efficiently and has more cushion to absorb rising costs or competition without losing money.",
-        your_value=f"Gross {_fmt_pct(m.gross_margin)} · Op {_fmt_pct(m.operating_margin)} · Net {_fmt_pct(m.net_margin)}",
-        benchmark_value=f"Gross {peer_gross} · Op {peer_op} · Net {peer_net} (industry avg)",
+        what_it_measures="How much profit the company keeps from every dollar of sales (gross/operating/net margin), and how efficiently it turns shareholder capital (ROE) and total assets (ROA) into profit.",
+        why_it_matters="Higher margins and returns mean the business runs more efficiently and has more cushion to absorb rising costs or competition. ROE/ROA catch efficient capital use that margins alone can miss.",
+        your_value=f"Gross {_fmt_pct(m.gross_margin)} · Op {_fmt_pct(m.operating_margin)} · Net {_fmt_pct(m.net_margin)} · ROE {_fmt_pct(m.return_on_equity)} · ROA {_fmt_pct(m.return_on_assets)}",
+        benchmark_value=f"Gross {peer_gross} · Op {peer_op} · Net {peer_net} · ROE {peer_roe} · ROA {peer_roa} (industry avg)",
         verdict=_verdict(pct),
         explanation=explanation,
         points=score,
@@ -202,41 +212,70 @@ def _score_profitability(m: Metrics) -> tuple[float, CategoryDetail]:
 
 def _score_financial_health(m: Metrics) -> tuple[float, CategoryDetail]:
     max_pts = WEIGHTS["financial_health"]
-    score = _relative_score(
-        m.debt_to_equity, m.peer_avg_debt_to_equity, max_pts, higher_is_better=False
-    )
-    pct = score / max_pts if max_pts else 0
+    debt_max = max_pts * 0.6
+    cash_max = max_pts * 0.4
 
+    # -- Debt-to-Equity sub-score (60%) --
+    debt_score = _relative_score(
+        m.debt_to_equity, m.peer_avg_debt_to_equity, debt_max, higher_is_better=False
+    )
     if m.debt_to_equity is None:
-        explanation = "No debt data was available, so this category was given neutral (half) credit instead of being penalized."
-        your_value = "N/A"
-        benchmark_value = "N/A"
+        debt_sentence = "No debt-to-equity data was available for this sub-metric, so it earned neutral credit."
+        de_value = "N/A"
+        de_bench = "N/A"
     else:
         bench = m.peer_avg_debt_to_equity
-        bench_str = f"{bench:.2f}" if bench else "N/A"
+        de_bench = f"{bench:.2f}" if bench else "N/A"
+        de_value = f"{m.debt_to_equity:.2f}"
         if bench:
             comparison = "less leveraged than" if m.debt_to_equity < bench else "more leveraged than"
-            explanation = (
-                f"Debt-to-Equity is {m.debt_to_equity:.2f} (meaning ${m.debt_to_equity:.2f} of "
-                f"debt for every $1 of shareholder equity), which is {comparison} the industry "
-                f"average of {bench:.2f}. Carrying half the industry's typical debt load or less "
-                f"earns full points; carrying double or more earns zero."
+            debt_sentence = (
+                f"Debt-to-Equity is {m.debt_to_equity:.2f} (${m.debt_to_equity:.2f} of debt per "
+                f"$1 of shareholder equity), {comparison} the industry average of {bench:.2f}. "
+                f"Carrying half the industry's typical debt load or less earns full points on "
+                f"this sub-metric; double or more earns zero."
             )
         else:
-            explanation = (
-                f"Debt-to-Equity is {m.debt_to_equity:.2f}, but no peer data was available for "
-                f"comparison, so this earned neutral credit."
+            debt_sentence = f"Debt-to-Equity is {m.debt_to_equity:.2f}, but no peer data was available for comparison."
+
+    # -- Free cash flow / debt coverage sub-score (40%) --
+    if m.total_debt is None or m.total_debt <= 0:
+        if m.free_cashflow is not None and m.free_cashflow > 0:
+            cash_score = cash_max
+            cash_sentence = (
+                "The company carries no meaningful debt and generates positive free cash flow, "
+                "so this sub-metric earns full marks."
             )
-        your_value = f"{m.debt_to_equity:.2f}"
-        benchmark_value = f"{bench_str} (industry avg)"
+        else:
+            cash_score = round(cash_max * 0.5, 3)
+            cash_sentence = "Free cash flow data was unavailable, so this sub-metric earned neutral credit."
+        fcf_value = f"{m.free_cashflow:,.0f}" if m.free_cashflow is not None else "N/A"
+        fcf_bench = "N/A"
+    else:
+        cash_score = _relative_score(m.fcf_to_debt, m.peer_avg_fcf_to_debt, cash_max, higher_is_better=True)
+        if m.fcf_to_debt is not None and m.peer_avg_fcf_to_debt is not None:
+            comparison = "stronger" if m.fcf_to_debt > m.peer_avg_fcf_to_debt else "weaker"
+            cash_sentence = (
+                f"Free cash flow covers {m.fcf_to_debt:.0%} of total debt annually -- {comparison} "
+                f"coverage than the industry average of {m.peer_avg_fcf_to_debt:.0%}. Higher coverage "
+                f"means debt could be paid down faster from cash the business actually generates."
+            )
+        else:
+            cash_sentence = "Free cash flow-to-debt coverage data was incomplete, so this sub-metric earned neutral credit."
+        fcf_value = f"{m.fcf_to_debt:.0%} of debt/yr" if m.fcf_to_debt is not None else "N/A"
+        fcf_bench = f"{m.peer_avg_fcf_to_debt:.0%} (industry avg)" if m.peer_avg_fcf_to_debt is not None else "N/A"
+
+    score = debt_score + cash_score
+    pct = score / max_pts if max_pts else 0
+    explanation = f"{debt_sentence} {cash_sentence}"
 
     return score, CategoryDetail(
         key="financial_health",
         title="Financial Health",
-        what_it_measures="How much debt the company carries relative to shareholder equity (Debt-to-Equity ratio).",
-        why_it_matters="Excess debt raises risk — interest payments eat into profits, and heavily indebted companies are more vulnerable during downturns or when interest rates rise.",
-        your_value=your_value,
-        benchmark_value=benchmark_value,
+        what_it_measures="Leverage (Debt-to-Equity) and debt coverage (how much of total debt could be paid off with one year of free cash flow).",
+        why_it_matters="Excess debt raises risk — interest payments eat into profits, and heavily indebted companies are more vulnerable during downturns. Strong free cash flow relative to debt means that risk is more theoretical than real.",
+        your_value=f"D/E {de_value} · FCF/Debt {fcf_value}",
+        benchmark_value=f"D/E {de_bench} · FCF/Debt {fcf_bench}",
         verdict=_verdict(pct),
         explanation=explanation,
         points=score,

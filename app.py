@@ -1,9 +1,12 @@
 """
 Stock Analysis Machine
 -----------------------
-Enter any ticker and get a live, data-driven grade (0-10) and a BUY / HOLD /
-SELL signal, based on revenue growth, margins, debt, valuation, and dividends
--- all benchmarked against live industry peer data pulled fresh every run.
+Enter any ticker -- stock, ETF, or mutual fund -- and get a live,
+data-driven grade (0-10) and a BUY / HOLD / SELL signal. Stocks are graded
+on revenue growth, margins, ROE/ROA, debt, cash flow, valuation, and
+dividends, benchmarked against live industry peers. ETFs/mutual funds are
+graded on cost, performance, and yield, benchmarked against a live S&P 500
+ETF (SPY) proxy. Everything is pulled fresh every run.
 """
 
 import time
@@ -13,6 +16,8 @@ import pandas as pd
 import streamlit as st
 
 from src.data_fetcher import fetch_stock_data
+from src.fund_metrics import FundMetrics, build_fund_metrics, is_fund
+from src.fund_scoring import WEIGHTS_FUND, grade_fund
 from src.metrics import build_metrics
 from src.scoring import WEIGHTS, grade_stock
 
@@ -46,6 +51,8 @@ CATEGORY_ICONS = {
     "valuation": "⚖️",
     "dividend": "💵",
     "liquidity": "🌊",
+    "cost": "💸",
+    "performance": "🚀",
 }
 
 # ---------------------------------------------------------------------------
@@ -173,11 +180,21 @@ st.markdown(
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
+def _cached_benchmark(_cache_bust: int):
+    return fetch_stock_data("SPY")
+
+
+@st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def _cached_analysis(ticker: str, _cache_bust: int):
     data = fetch_stock_data(ticker)
+
+    if is_fund(data.info):
+        benchmark = data if ticker == "SPY" else _cached_benchmark(_cache_bust)
+        metrics = build_fund_metrics(data, benchmark)
+        return grade_fund(metrics)
+
     metrics = build_metrics(data)
-    grade = grade_stock(metrics)
-    return grade
+    return grade_stock(metrics)
 
 
 def run_analysis(ticker: str, force_refresh: bool):
@@ -209,10 +226,10 @@ def _themed(chart):
     ).configure_view(strokeWidth=0).properties(background="transparent")
 
 
-def category_bar_chart(category_scores: dict, category_titles: dict):
+def category_bar_chart(category_scores: dict, category_titles: dict, weights: dict):
     rows = []
     for k, v in category_scores.items():
-        max_pts = WEIGHTS[k]
+        max_pts = weights[k]
         pct = v / max_pts if max_pts else 0
         color = GREEN if pct >= 0.65 else AMBER if pct >= 0.35 else RED
         rows.append(
@@ -226,10 +243,11 @@ def category_bar_chart(category_scores: dict, category_titles: dict):
         )
     df = pd.DataFrame(rows)
     order = df.sort_values("Max", ascending=False)["Category"].tolist()
+    chart_max = max(weights.values()) * 1.05
 
     base = alt.Chart(df).encode(y=alt.Y("Category:N", sort=order, title=None, axis=alt.Axis(labelFontSize=13)))
     bars = base.mark_bar(cornerRadiusEnd=6, height=22).encode(
-        x=alt.X("Points:Q", scale=alt.Scale(domain=[0, 2.6]), title="Points earned"),
+        x=alt.X("Points:Q", scale=alt.Scale(domain=[0, chart_max]), title="Points earned"),
         color=alt.Color("Color:N", scale=None),
         tooltip=["Category", "Label"],
     )
@@ -289,8 +307,9 @@ st.markdown(
     """
     <div class="sam-hero">
         <h1>📈 Stock Analysis Machine</h1>
-        <p>Live-graded 0-10 with a BUY / HOLD / SELL signal — benchmarked against
-        real industry peers, fetched fresh every time you run it.</p>
+        <p>Live-graded 0-10 with a BUY / HOLD / SELL signal — stocks, ETFs, and
+        mutual funds — benchmarked against real live data, fetched fresh every
+        time you run it.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -299,7 +318,7 @@ st.markdown(
 input_col, button_col, refresh_col = st.columns([3, 1, 1.4])
 with input_col:
     ticker_input = st.text_input(
-        "Ticker symbol", value="AAPL", placeholder="e.g. AAPL, MSFT, TSLA", label_visibility="collapsed"
+        "Ticker symbol", value="AAPL", placeholder="e.g. AAPL, MSFT, VOO, VTI", label_visibility="collapsed"
     ).upper()
 with button_col:
     analyze_clicked = st.button("Analyze", type="primary", use_container_width=True)
@@ -318,15 +337,24 @@ if analyze_clicked and ticker_input:
             st.stop()
 
     m = grade.metrics
+    is_fund_result = isinstance(m, FundMetrics)
     style = SIGNAL_STYLE[grade.signal]
     category_titles = {d.key: d.title for d in grade.details}
+    weights = WEIGHTS_FUND if is_fund_result else WEIGHTS
 
-    name = m.company_name or m.ticker
+    name = m.name if is_fund_result else m.company_name
+    name = name or m.ticker
     st.markdown(
         f"### {name} <span style='color:{TEXT_MUTED}; font-weight:500;'>({m.ticker})</span>",
         unsafe_allow_html=True,
     )
-    st.caption(f"{m.sector or 'Unknown sector'} · {m.industry or 'Unknown industry'} · {m.peer_count} live peers used for benchmarking")
+    if is_fund_result:
+        st.caption(
+            f"{m.category or 'Fund'} · {m.fund_family or 'Unknown family'} · "
+            f"benchmarked against {m.benchmark_ticker} (S&P 500 ETF), fetched live"
+        )
+    else:
+        st.caption(f"{m.sector or 'Unknown sector'} · {m.industry or 'Unknown industry'} · {m.peer_count} live peers used for benchmarking")
 
     score_col, signal_col = st.columns([2, 1])
     with score_col:
@@ -357,52 +385,95 @@ if analyze_clicked and ticker_input:
         )
 
     st.markdown('<div class="sam-section-title">📊 Score Breakdown</div>', unsafe_allow_html=True)
-    category_bar_chart(grade.category_scores, category_titles)
+    category_bar_chart(grade.category_scores, category_titles, weights)
 
     st.markdown('<div class="sam-section-title">🔑 Key Metrics</div>', unsafe_allow_html=True)
 
-    row1 = st.columns(4)
-    with row1[0]:
-        metric_card("Price", f"${m.price:,.2f}" if m.price else "N/A")
-    with row1[1]:
-        rev_label = f"Revenue CAGR ({max(m.years_of_revenue_data - 1, 0)}yr)"
-        rev_val = f"{m.revenue_growth_5y:.1%}" if m.revenue_growth_5y is not None else "N/A"
-        peer_growth = f"vs. industry {m.peer_avg_revenue_growth:.1%}" if m.peer_avg_revenue_growth is not None else ""
-        metric_card(rev_label, rev_val, peer_growth)
-    with row1[2]:
-        metric_card(
-            "P/E Ratio",
-            f"{m.pe_ratio:.1f}" if m.pe_ratio is not None else "N/A",
-            f"vs. industry {m.peer_avg_pe_ratio:.1f}" if m.peer_avg_pe_ratio is not None else "",
-        )
-    with row1[3]:
-        metric_card(
-            "Debt-to-Equity",
-            f"{m.debt_to_equity:.2f}" if m.debt_to_equity is not None else "N/A",
-            f"vs. industry {m.peer_avg_debt_to_equity:.2f}" if m.peer_avg_debt_to_equity is not None else "",
-        )
+    if is_fund_result:
+        row1 = st.columns(4)
+        with row1[0]:
+            metric_card("Price / NAV", f"${m.price:,.2f}" if m.price else "N/A")
+        with row1[1]:
+            metric_card(
+                "Expense Ratio",
+                f"{m.expense_ratio:.2f}%" if m.expense_ratio is not None else "N/A",
+                f"vs. {m.benchmark_ticker} {m.benchmark_expense_ratio:.2f}%" if m.benchmark_expense_ratio is not None else "",
+            )
+        with row1[2]:
+            metric_card("Total Assets (AUM)", f"${m.total_assets:,.0f}" if m.total_assets else "N/A")
+        with row1[3]:
+            metric_card("Avg Volume", f"{m.avg_volume:,.0f}" if m.avg_volume else "N/A")
 
-    st.write("")
-    row2 = st.columns(4)
-    with row2[0]:
-        metric_card("Gross Margin", f"{m.gross_margin:.1%}" if m.gross_margin is not None else "N/A")
-    with row2[1]:
-        metric_card("Operating Margin", f"{m.operating_margin:.1%}" if m.operating_margin is not None else "N/A")
-    with row2[2]:
-        metric_card("Net Margin", f"{m.net_margin:.1%}" if m.net_margin is not None else "N/A")
-    with row2[3]:
-        metric_card("Avg Volume", f"{m.avg_volume:,.0f}" if m.avg_volume else "N/A")
+        st.write("")
+        row2 = st.columns(4)
+        with row2[0]:
+            metric_card(
+                "YTD Return",
+                f"{m.ytd_return:.1%}" if m.ytd_return is not None else "N/A",
+                f"vs. {m.benchmark_ticker} {m.benchmark_ytd_return:.1%}" if m.benchmark_ytd_return is not None else "",
+            )
+        with row2[1]:
+            metric_card(
+                "3-Year Return (ann.)",
+                f"{m.three_year_return:.1%}" if m.three_year_return is not None else "N/A",
+                f"vs. {m.benchmark_ticker} {m.benchmark_three_year_return:.1%}" if m.benchmark_three_year_return is not None else "",
+            )
+        with row2[2]:
+            metric_card(
+                "5-Year Return (ann.)",
+                f"{m.five_year_return:.1%}" if m.five_year_return is not None else "N/A",
+                f"vs. {m.benchmark_ticker} {m.benchmark_five_year_return:.1%}" if m.benchmark_five_year_return is not None else "",
+            )
+        with row2[3]:
+            metric_card("Dividend Yield", f"{m.dividend_yield:.2%}" if m.dividend_yield else "No dividend")
 
-    st.write("")
-    row3 = st.columns(4)
-    with row3[0]:
-        metric_card("Dividend Yield", f"{m.dividend_yield:.2%}" if m.dividend_yield else "No dividend")
-    with row3[1]:
-        metric_card("Dividend Streak", f"{m.dividend_streak_years} yrs" if m.dividend_yield else "N/A")
-    with row3[2]:
-        metric_card("Total Debt", f"${m.total_debt:,.0f}" if m.total_debt else "N/A")
-    with row3[3]:
-        metric_card("Peers Benchmarked", f"{m.peer_count}")
+    else:
+        row1 = st.columns(4)
+        with row1[0]:
+            metric_card("Price", f"${m.price:,.2f}" if m.price else "N/A")
+        with row1[1]:
+            rev_label = f"Revenue CAGR ({max(m.years_of_revenue_data - 1, 0)}yr)"
+            rev_val = f"{m.revenue_growth_5y:.1%}" if m.revenue_growth_5y is not None else "N/A"
+            peer_growth = f"vs. industry {m.peer_avg_revenue_growth:.1%}" if m.peer_avg_revenue_growth is not None else ""
+            metric_card(rev_label, rev_val, peer_growth)
+        with row1[2]:
+            metric_card(
+                "P/E Ratio",
+                f"{m.pe_ratio:.1f}" if m.pe_ratio is not None else "N/A",
+                f"vs. industry {m.peer_avg_pe_ratio:.1f}" if m.peer_avg_pe_ratio is not None else "",
+            )
+        with row1[3]:
+            metric_card(
+                "Debt-to-Equity",
+                f"{m.debt_to_equity:.2f}" if m.debt_to_equity is not None else "N/A",
+                f"vs. industry {m.peer_avg_debt_to_equity:.2f}" if m.peer_avg_debt_to_equity is not None else "",
+            )
+
+        st.write("")
+        row2 = st.columns(4)
+        with row2[0]:
+            metric_card("Gross Margin", f"{m.gross_margin:.1%}" if m.gross_margin is not None else "N/A")
+        with row2[1]:
+            metric_card("Operating Margin", f"{m.operating_margin:.1%}" if m.operating_margin is not None else "N/A")
+        with row2[2]:
+            metric_card("Net Margin", f"{m.net_margin:.1%}" if m.net_margin is not None else "N/A")
+        with row2[3]:
+            metric_card(
+                "ROE",
+                f"{m.return_on_equity:.1%}" if m.return_on_equity is not None else "N/A",
+                f"vs. industry {m.peer_avg_roe:.1%}" if m.peer_avg_roe is not None else "",
+            )
+
+        st.write("")
+        row3 = st.columns(4)
+        with row3[0]:
+            metric_card("Dividend Yield", f"{m.dividend_yield:.2%}" if m.dividend_yield else "No dividend")
+        with row3[1]:
+            metric_card("Dividend Streak", f"{m.dividend_streak_years} yrs" if m.dividend_yield else "N/A")
+        with row3[2]:
+            metric_card("Total Debt", f"${m.total_debt:,.0f}" if m.total_debt else "N/A")
+        with row3[3]:
+            metric_card("Peers Benchmarked", f"{m.peer_count}")
 
     st.markdown('<div class="sam-section-title">🧠 Why This Grade</div>', unsafe_allow_html=True)
     st.caption("A full, plain-language breakdown of every category — what it measures, why it matters, and exactly how the score was calculated.")

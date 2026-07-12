@@ -1,10 +1,12 @@
 # Stock Analysis Machine
 
-Enter any stock ticker and get a live grade out of 10, plus a **BUY / HOLD / SELL**
-signal. Every run pulls fresh data straight from Yahoo Finance — no stale or
-hardcoded numbers.
+Enter any stock, ETF, or mutual fund ticker and get a live grade out of 10,
+plus a **BUY / HOLD / SELL** signal. Every run pulls fresh data straight from
+Yahoo Finance — no stale or hardcoded numbers.
 
 ## How it's graded
+
+### Stocks
 
 Each stock is scored 0-10 across six categories, **relative to a live sample of
 its industry/sector peers** (also pulled fresh every run) rather than fixed
@@ -14,8 +16,8 @@ company than for a grocery chain.
 | Category | Points | Logic |
 |---|---|---|
 | Revenue Growth | 2.5 | Revenue CAGR (up to 5yr, based on available data) vs. peer average |
-| Profitability | 2.5 | Gross / operating / net margin vs. peer average |
-| Financial Health | 2.0 | Debt-to-equity vs. peer average (lower is better) |
+| Profitability | 2.5 | Gross / operating / net margin **plus ROE and ROA** (capital efficiency) vs. peer average |
+| Financial Health | 2.0 | Debt-to-equity (60%) **plus free-cash-flow-to-debt coverage** (40%) vs. peer average |
 | Valuation | 1.5 | P/E vs. peer average, **growth-adjusted** (PEG-style) so high-growth stocks aren't unfairly punished for a higher P/E |
 | Dividend | 1.0 | Yield vs. peer average + consecutive years of flat-or-rising dividends |
 | Liquidity | 0.5 | Average trading volume, as a sanity check against thin/illiquid stocks |
@@ -26,6 +28,21 @@ Peers are pulled from Yahoo's industry classification first; if that group is
 too narrow (e.g. a mega-cap that dominates its own "industry" bucket), it
 blends in the broader sector and filters out companies that are too different
 in size (market cap) to be a meaningful comparison.
+
+### ETFs & Mutual Funds
+
+Funds (e.g. VOO, VTI, VFIAX) don't have revenue, margins, or debt, so they're
+graded on a separate rubric — benchmarked live against a S&P 500 ETF (SPY)
+proxy instead of industry peers:
+
+| Category | Points | Logic |
+|---|---|---|
+| Cost | 3.0 | Expense ratio vs. SPY's (lower is better — fees compound over decades) |
+| Performance | 4.5 | YTD / 3yr / 5yr annualized return vs. SPY (3yr weighted heaviest) |
+| Dividend Yield | 1.0 | Distribution yield vs. SPY's |
+| Liquidity | 1.5 | Average daily trading volume |
+
+Same 8.0/5.0 BUY/HOLD/SELL thresholds apply.
 
 Click "Why this grade?" in the app to see the exact numbers and reasoning
 behind every category score.

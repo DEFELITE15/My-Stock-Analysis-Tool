@@ -27,8 +27,13 @@ class Metrics:
     operating_margin: float | None
     net_margin: float | None
 
+    return_on_equity: float | None  # as a decimal (1.4 = 140%)
+    return_on_assets: float | None  # as a decimal
+
     debt_to_equity: float | None  # as a ratio (1.5 = 150%)
     total_debt: float | None
+    free_cashflow: float | None
+    fcf_to_debt: float | None  # free cash flow / total debt -- debt coverage
 
     pe_ratio: float | None
 
@@ -41,7 +46,10 @@ class Metrics:
     peer_avg_gross_margin: float | None
     peer_avg_operating_margin: float | None
     peer_avg_net_margin: float | None
+    peer_avg_roe: float | None
+    peer_avg_roa: float | None
     peer_avg_debt_to_equity: float | None
+    peer_avg_fcf_to_debt: float | None
     peer_avg_pe_ratio: float | None
     peer_avg_dividend_yield: float | None
     peer_count: int
@@ -94,18 +102,44 @@ def _dividend_streak(dividends: pd.Series) -> int:
     return streak
 
 
+def _as_float(value) -> float | None:
+    """yfinance occasionally returns dirty data (e.g. the literal string
+    'NaN' instead of a real float) for fields like trailingAnnualDividendYield.
+    Coerce to a clean float or None."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN check
+        return None
+    return f
+
+
 def _avg(values: list[float | None]) -> float | None:
-    clean = [v for v in values if v is not None]
+    clean = [_as_float(v) for v in values]
+    clean = [v for v in clean if v is not None]
     if not clean:
         return None
     return sum(clean) / len(clean)
+
+
+def _fcf_to_debt(fcf: float | None, debt: float | None) -> float | None:
+    """Free cash flow as a fraction of total debt -- how much of its debt a
+    company could retire with a single year of free cash flow. None for
+    debt-free companies (handled as a special case in scoring, not here)."""
+    fcf, debt = _as_float(fcf), _as_float(debt)
+    if fcf is None or debt is None or debt <= 0:
+        return None
+    return fcf / debt
 
 
 def build_metrics(data: StockData) -> Metrics:
     info = data.info
     growth, years = _revenue_cagr(data.income_stmt)
 
-    debt_to_equity = info.get("debtToEquity")
+    debt_to_equity = _as_float(info.get("debtToEquity"))
     if debt_to_equity is not None:
         debt_to_equity = debt_to_equity / 100  # yfinance reports as percent
 
@@ -114,25 +148,34 @@ def build_metrics(data: StockData) -> Metrics:
     # yfinance's `dividendYield` is always in percentage-point form (5.28 == 5.28%),
     # never a decimal fraction -- always divide by 100. Fall back to the
     # trailing-twelve-month yield (already a decimal) if it's missing.
-    div_yield = info.get("dividendYield")
+    # Note: yfinance occasionally returns dirty data (e.g. the literal string
+    # 'NaN') for these fields, so everything is passed through _as_float.
+    div_yield = _as_float(info.get("dividendYield"))
     if div_yield is not None:
         div_yield = div_yield / 100
     else:
-        div_yield = info.get("trailingAnnualDividendYield")
+        div_yield = _as_float(info.get("trailingAnnualDividendYield"))
+
+    free_cashflow = _as_float(info.get("freeCashflow"))
+    fcf_to_debt = _fcf_to_debt(free_cashflow, info.get("totalDebt"))
 
     peer_growths, peer_gms, peer_oms, peer_nms = [], [], [], []
-    peer_des, peer_pes, peer_divs = [], [], []
+    peer_roes, peer_roas = [], []
+    peer_des, peer_pes, peer_divs, peer_fcf_to_debts = [], [], [], []
     peer_stmts = data.peer_income_stmts or [None] * len(data.peer_info)
     for p, stmt in zip(data.peer_info, peer_stmts):
         peer_gms.append(p.get("grossMargins"))
         peer_oms.append(p.get("operatingMargins"))
         peer_nms.append(p.get("profitMargins"))
-        de = p.get("debtToEquity")
+        peer_roes.append(p.get("returnOnEquity"))
+        peer_roas.append(p.get("returnOnAssets"))
+        de = _as_float(p.get("debtToEquity"))
         peer_des.append(de / 100 if de is not None else None)
         peer_pes.append(p.get("trailingPE") or p.get("forwardPE"))
-        dy = p.get("dividendYield")
-        dy = dy / 100 if dy is not None else p.get("trailingAnnualDividendYield")
+        dy = _as_float(p.get("dividendYield"))
+        dy = dy / 100 if dy is not None else _as_float(p.get("trailingAnnualDividendYield"))
         peer_divs.append(dy)
+        peer_fcf_to_debts.append(_fcf_to_debt(p.get("freeCashflow"), p.get("totalDebt")))
         peer_growth, _ = _revenue_cagr(stmt) if stmt is not None else (None, 0)
         peer_growths.append(peer_growth)
 
@@ -148,8 +191,12 @@ def build_metrics(data: StockData) -> Metrics:
         gross_margin=info.get("grossMargins"),
         operating_margin=info.get("operatingMargins"),
         net_margin=info.get("profitMargins"),
+        return_on_equity=_as_float(info.get("returnOnEquity")),
+        return_on_assets=_as_float(info.get("returnOnAssets")),
         debt_to_equity=debt_to_equity,
         total_debt=info.get("totalDebt"),
+        free_cashflow=free_cashflow,
+        fcf_to_debt=fcf_to_debt,
         pe_ratio=info.get("trailingPE") or info.get("forwardPE"),
         avg_volume=avg_volume,
         dividend_yield=div_yield,
@@ -158,7 +205,10 @@ def build_metrics(data: StockData) -> Metrics:
         peer_avg_gross_margin=_avg(peer_gms),
         peer_avg_operating_margin=_avg(peer_oms),
         peer_avg_net_margin=_avg(peer_nms),
+        peer_avg_roe=_avg(peer_roes),
+        peer_avg_roa=_avg(peer_roas),
         peer_avg_debt_to_equity=_avg(peer_des),
+        peer_avg_fcf_to_debt=_avg(peer_fcf_to_debts),
         peer_avg_pe_ratio=_avg(peer_pes),
         peer_avg_dividend_yield=_avg(peer_divs),
         peer_count=len(data.peer_info),
