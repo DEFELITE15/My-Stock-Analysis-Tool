@@ -42,6 +42,17 @@ class Metrics:
     dividend_yield: float | None
     dividend_streak_years: int  # consecutive years of flat-or-rising dividends
 
+    earnings_growth: float | None  # decimal, YoY EPS/earnings growth
+    beta: float | None  # volatility vs. the overall market (1.0 = moves with the market)
+
+    target_mean_price: float | None
+    target_high_price: float | None
+    target_low_price: float | None
+
+    held_percent_insiders: float | None  # decimal
+    held_percent_institutions: float | None  # decimal
+    short_percent_of_float: float | None  # decimal
+
     peer_avg_revenue_growth: float | None
     peer_avg_gross_margin: float | None
     peer_avg_operating_margin: float | None
@@ -201,6 +212,14 @@ def build_metrics(data: StockData) -> Metrics:
         avg_volume=avg_volume,
         dividend_yield=div_yield,
         dividend_streak_years=_dividend_streak(data.dividends),
+        earnings_growth=_as_float(info.get("earningsGrowth")),
+        beta=_as_float(info.get("beta")),
+        target_mean_price=_as_float(info.get("targetMeanPrice")),
+        target_high_price=_as_float(info.get("targetHighPrice")),
+        target_low_price=_as_float(info.get("targetLowPrice")),
+        held_percent_insiders=_as_float(info.get("heldPercentInsiders")),
+        held_percent_institutions=_as_float(info.get("heldPercentInstitutions")),
+        short_percent_of_float=_as_float(info.get("shortPercentOfFloat")),
         peer_avg_revenue_growth=_avg(peer_growths),
         peer_avg_gross_margin=_avg(peer_gms),
         peer_avg_operating_margin=_avg(peer_oms),

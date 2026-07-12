@@ -29,6 +29,11 @@ too narrow (e.g. a mega-cap that dominates its own "industry" bucket), it
 blends in the broader sector and filters out companies that are too different
 in size (market cap) to be a meaningful comparison.
 
+The app also surfaces an **Ownership & Risk** panel (analyst price target,
+beta, insider/institutional ownership, short interest) for extra context —
+this is informational only and isn't factored into the 0-10 score, since the
+grade is built purely from hard fundamentals, not forecasts or sentiment.
+
 ### ETFs & Mutual Funds
 
 Funds (e.g. VOO, VTI, VFIAX) don't have revenue, margins, or debt, so they're

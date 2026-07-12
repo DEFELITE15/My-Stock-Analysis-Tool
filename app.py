@@ -475,6 +475,38 @@ if analyze_clicked and ticker_input:
         with row3[3]:
             metric_card("Peers Benchmarked", f"{m.peer_count}")
 
+        st.markdown('<div class="sam-section-title">🏛️ Ownership & Risk</div>', unsafe_allow_html=True)
+        st.caption(
+            "Context from institutional money flow, price targets, and volatility — not used to compute the "
+            "score above, since this model grades hard fundamentals, not forecasts or sentiment. Worth weighing "
+            "alongside your grade, not in place of it."
+        )
+        row4 = st.columns(3)
+        with row4[0]:
+            if m.target_mean_price and m.price:
+                upside = (m.target_mean_price / m.price) - 1
+                target_sub = f"Range ${m.target_low_price:,.0f}\u2013${m.target_high_price:,.0f} · {upside:+.1%} vs. current price"
+                metric_card("Avg. Price Target", f"${m.target_mean_price:,.2f}", target_sub)
+            else:
+                metric_card("Avg. Price Target", "N/A")
+        with row4[1]:
+            beta_sub = (
+                "More volatile than the market" if m.beta and m.beta > 1
+                else "Less volatile than the market" if m.beta is not None
+                else ""
+            )
+            metric_card("Beta (Risk)", f"{m.beta:.2f}" if m.beta is not None else "N/A", beta_sub)
+        with row4[2]:
+            short_sub = "Elevated — could signal bearish sentiment" if m.short_percent_of_float and m.short_percent_of_float > 0.1 else ""
+            metric_card("Short % of Float", f"{m.short_percent_of_float:.1%}" if m.short_percent_of_float is not None else "N/A", short_sub)
+
+        st.write("")
+        row5 = st.columns(2)
+        with row5[0]:
+            metric_card("Insider Ownership", f"{m.held_percent_insiders:.1%}" if m.held_percent_insiders is not None else "N/A")
+        with row5[1]:
+            metric_card("Institutional Ownership", f"{m.held_percent_institutions:.1%}" if m.held_percent_institutions is not None else "N/A")
+
     st.markdown('<div class="sam-section-title">🧠 Why This Grade</div>', unsafe_allow_html=True)
     st.caption("A full, plain-language breakdown of every category — what it measures, why it matters, and exactly how the score was calculated.")
     for detail in grade.details:

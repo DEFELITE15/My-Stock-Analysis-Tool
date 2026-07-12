@@ -150,6 +150,17 @@ def _score_growth(m: Metrics) -> tuple[float, CategoryDetail]:
         )
         benchmark_str = "N/A"
 
+    if m.earnings_growth is not None:
+        eg_comparison = (
+            "outpacing revenue growth (margins likely expanding)"
+            if m.earnings_growth > m.revenue_growth_5y
+            else "trailing revenue growth (margins likely compressing)"
+        )
+        explanation += (
+            f" For context (not scored here): the most recent year's earnings grew "
+            f"{m.earnings_growth:.1%}, {eg_comparison}."
+        )
+
     return score, CategoryDetail(
         key="growth",
         title="Revenue Growth",
