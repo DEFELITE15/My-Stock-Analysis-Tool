@@ -2,11 +2,14 @@
 Stock Analysis Machine
 -----------------------
 Enter any ticker -- stock, ETF, or mutual fund -- and get a live,
-data-driven grade (0-10) and a BUY / HOLD / SELL signal. Stocks are graded
-on revenue growth, margins, ROE/ROA, debt, cash flow, valuation, and
-dividends, benchmarked against live industry peers. ETFs/mutual funds are
-graded on cost, performance, and yield, benchmarked against a live S&P 500
-ETF (SPY) proxy. Everything is pulled fresh every run.
+data-driven grade (0-10) and a BUY / HOLD / SELL signal, built for
+long-term/buy-and-hold investors. Stocks are graded on revenue growth and
+consistency, margins, ROE/ROA, cash-earnings quality, debt and balance-sheet
+coverage ratios, blended valuation (P/E, P/FCF, P/B), and capital allocation
+(dividend safety + buybacks vs. dilution), benchmarked against live industry
+peers. ETFs/mutual funds are graded on cost, performance, and yield,
+benchmarked against a live S&P 500 ETF (SPY) proxy. Everything is pulled
+fresh every run.
 """
 
 import time
@@ -49,6 +52,7 @@ CATEGORY_ICONS = {
     "profitability": "💰",
     "financial_health": "🛡️",
     "valuation": "⚖️",
+    "capital_allocation": "🔁",
     "dividend": "💵",
     "liquidity": "🌊",
     "cost": "💸",
@@ -312,9 +316,9 @@ st.markdown(
     """
     <div class="sam-hero">
         <h1>📈 Stock Analysis Machine</h1>
-        <p>Live-graded 0-10 with a BUY / HOLD / SELL signal — stocks, ETFs, and
-        mutual funds — benchmarked against real live data, fetched fresh every
-        time you run it.</p>
+        <p>Live-graded 0-10 with a BUY / HOLD / SELL signal, built for long-term
+        investors — stocks, ETFs, and mutual funds — benchmarked against real
+        live data, fetched fresh every time you run it.</p>
     </div>
     """,
     unsafe_allow_html=True,
@@ -333,8 +337,8 @@ with refresh_col:
 RISK_LABELS = {"Low": "low", "Medium": "medium", "High": "high"}
 RISK_HELP = (
     "Re-weights the scoring categories and shifts the BUY/HOLD/SELL bar to match how much risk you're "
-    "willing to take on. Low tilts toward financial health, dividends, and low fees; High tilts toward "
-    "growth and performance upside. Doesn't change how any individual metric is measured -- only how "
+    "willing to take on. Low tilts toward financial health, capital allocation, and low fees; High tilts "
+    "toward growth and performance upside. Doesn't change how any individual metric is measured -- only how "
     "much each category counts, and how strict the signal is."
 )
 risk_label = st.radio("Risk tolerance", list(RISK_LABELS.keys()), index=1, horizontal=True, help=RISK_HELP)
@@ -463,9 +467,9 @@ if analyze_clicked and ticker_input:
             )
         with row1[3]:
             metric_card(
-                "Debt-to-Equity",
-                f"{m.debt_to_equity:.2f}" if m.debt_to_equity is not None else "N/A",
-                f"vs. industry {m.peer_avg_debt_to_equity:.2f}" if m.peer_avg_debt_to_equity is not None else "",
+                "P/B Ratio",
+                f"{m.price_to_book:.1f}" if m.price_to_book is not None else "N/A",
+                f"vs. industry {m.peer_avg_price_to_book:.1f}" if m.peer_avg_price_to_book is not None else "",
             )
 
         st.write("")
@@ -486,12 +490,66 @@ if analyze_clicked and ticker_input:
         st.write("")
         row3 = st.columns(4)
         with row3[0]:
-            metric_card("Dividend Yield", f"{m.dividend_yield:.2%}" if m.dividend_yield else "No dividend")
+            metric_card(
+                "ROA",
+                f"{m.return_on_assets:.1%}" if m.return_on_assets is not None else "N/A",
+                f"vs. industry {m.peer_avg_roa:.1%}" if m.peer_avg_roa is not None else "",
+            )
         with row3[1]:
-            metric_card("Dividend Streak", f"{m.dividend_streak_years} yrs" if m.dividend_yield else "N/A")
+            metric_card(
+                "Cash Conversion (FCF/NI)",
+                f"{m.cash_conversion_ratio:.0%}" if m.cash_conversion_ratio is not None else "N/A",
+                "Earnings quality check",
+            )
         with row3[2]:
-            metric_card("Total Debt", f"${m.total_debt:,.0f}" if m.total_debt else "N/A")
+            metric_card(
+                "Debt-to-Equity",
+                f"{m.debt_to_equity:.2f}" if m.debt_to_equity is not None else "N/A",
+                f"vs. industry {m.peer_avg_debt_to_equity:.2f}" if m.peer_avg_debt_to_equity is not None else "",
+            )
         with row3[3]:
+            metric_card(
+                "Current Ratio",
+                f"{m.current_ratio:.2f}" if m.current_ratio is not None else "N/A",
+                "1.5x+ is a healthy floor",
+            )
+
+        st.write("")
+        row4 = st.columns(4)
+        with row4[0]:
+            metric_card(
+                "Interest Coverage",
+                f"{m.interest_coverage:.1f}x" if m.interest_coverage is not None else ("No debt burden" if not m.total_debt else "N/A"),
+                "EBIT / interest expense",
+            )
+        with row4[1]:
+            metric_card(
+                "P/FCF Ratio",
+                f"{m.price_to_fcf:.1f}" if m.price_to_fcf is not None else "N/A",
+                f"vs. industry {m.peer_avg_price_to_fcf:.1f}" if m.peer_avg_price_to_fcf is not None else "",
+            )
+        with row4[2]:
+            metric_card("Dividend Yield", f"{m.dividend_yield:.2%}" if m.dividend_yield else "No dividend")
+        with row4[3]:
+            metric_card(
+                "Payout Ratio",
+                f"{m.payout_ratio:.0%}" if m.payout_ratio is not None else "N/A",
+                "40% or less is comfortably covered",
+            )
+
+        st.write("")
+        row5 = st.columns(4)
+        with row5[0]:
+            metric_card("Dividend Streak", f"{m.dividend_streak_years} yrs" if m.dividend_yield else "N/A")
+        with row5[1]:
+            metric_card(
+                "Share Count Trend",
+                f"{m.shares_cagr:+.1%}/yr" if m.shares_cagr is not None else "N/A",
+                "Negative = buybacks, positive = dilution",
+            )
+        with row5[2]:
+            metric_card("Total Debt", f"${m.total_debt:,.0f}" if m.total_debt else "N/A")
+        with row5[3]:
             metric_card("Peers Benchmarked", f"{m.peer_count}")
 
         st.markdown('<div class="sam-section-title">🏛️ Ownership & Risk</div>', unsafe_allow_html=True)

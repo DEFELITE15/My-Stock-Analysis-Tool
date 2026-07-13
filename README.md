@@ -2,24 +2,31 @@
 
 Enter any stock, ETF, or mutual fund ticker and get a live grade out of 10,
 plus a **BUY / HOLD / SELL** signal. Every run pulls fresh data straight from
-Yahoo Finance — no stale or hardcoded numbers.
+Yahoo Finance — no stale or hardcoded numbers. The stock rubric is built for
+**long-term, buy-and-hold investors**: on top of standard growth/valuation
+metrics, it digs into earnings quality, balance-sheet durability, and
+whether management actually returns cash to shareholders responsibly — the
+things that matter most over a multi-year hold, not a quarterly trade.
 
 ## How it's graded
 
 ### Stocks
 
-Each stock is scored 0-10 across six categories, **relative to a live sample of
-its industry/sector peers** (also pulled fresh every run) rather than fixed
-thresholds — a 15% net margin means something very different for a software
-company than for a grocery chain.
+Each stock is scored 0-10 across six categories. Most sub-metrics are scored
+**relative to a live sample of its industry/sector peers** (also pulled
+fresh every run) rather than fixed thresholds — a 15% net margin means
+something very different for a software company than for a grocery chain.
+A few durability checks (coverage ratios, earnings quality, dividend safety)
+are scored against fixed floors instead, since "how much interest coverage
+is enough" doesn't really depend on what industry you're in.
 
 | Category | Points | Logic |
 |---|---|---|
-| Revenue Growth | 2.5 | Revenue CAGR (up to 5yr, based on available data) vs. peer average |
-| Profitability | 2.5 | Gross / operating / net margin **plus ROE and ROA** (capital efficiency) vs. peer average |
-| Financial Health | 2.0 | Debt-to-equity (60%) **plus free-cash-flow-to-debt coverage** (40%) vs. peer average |
-| Valuation | 1.5 | P/E vs. peer average, **growth-adjusted** (PEG-style) so high-growth stocks aren't unfairly punished for a higher P/E |
-| Dividend | 1.0 | Yield vs. peer average + consecutive years of flat-or-rising dividends |
+| Revenue Growth | 2.0 | Revenue CAGR (up to 5yr) vs. peer average (75%), plus **year-over-year growth consistency** — steady growth scores higher than lumpy/erratic growth of the same average rate (25%) |
+| Profitability | 2.5 | Gross / operating / net margin plus ROE and ROA vs. peer average (75%), plus **cash-earnings quality** — how much of reported net income actually shows up as free cash flow (25%) |
+| Financial Health | 2.0 | Debt-to-equity (30%) and FCF-to-debt coverage (25%) vs. peer average, plus **current ratio** (25%) and **interest coverage** (20%) against fixed safety floors |
+| Valuation | 1.5 | Blended across three lenses vs. peer average: growth-adjusted P/E (60%), **P/FCF** (25%), and **P/B** (15%) — so one accounting-sensitive multiple doesn't drive the whole score |
+| Capital Allocation | 1.5 | Dividend yield (25%), consistency (25%), and **payout-ratio sustainability** (20%) vs. peer average/fixed floor, plus **buybacks vs. dilution** — a shrinking share count earns credit even with no dividend at all (30%) |
 | Liquidity | 0.5 | Average trading volume, as a sanity check against thin/illiquid stocks |
 
 **Signal:** 8.0-10 = BUY, 5.0-7.9 = HOLD, below 5.0 = SELL.
@@ -28,6 +35,17 @@ Peers are pulled from Yahoo's industry classification first; if that group is
 too narrow (e.g. a mega-cap that dominates its own "industry" bucket), it
 blends in the broader sector and filters out companies that are too different
 in size (market cap) to be a meaningful comparison.
+
+**Why capital allocation instead of a plain dividend category:** some of the
+best long-term compounders (Alphabet, Meta) return cash almost entirely
+through buybacks rather than dividends. Grading dividends in isolation used
+to shut those companies out of a whole category's points; now a shrinking
+share count earns credit on its own.
+
+**Why cash-earnings quality and coverage ratios:** margins and growth can
+look great on an income statement while the underlying cash generation or
+balance sheet cushion is quietly weak — the kind of thing that doesn't
+matter for a quarter but matters a lot over a multi-year hold.
 
 The app also surfaces an **Ownership & Risk** panel (analyst price target,
 beta, insider/institutional ownership, short interest) for extra context —

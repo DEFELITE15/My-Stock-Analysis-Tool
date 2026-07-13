@@ -63,35 +63,112 @@ class Metrics:
     peer_avg_fcf_to_debt: float | None
     peer_avg_pe_ratio: float | None
     peer_avg_dividend_yield: float | None
+    peer_avg_price_to_book: float | None
+    peer_avg_price_to_fcf: float | None
     peer_count: int
+
+    # -- Earnings quality --
+    net_income: float | None
+    cash_conversion_ratio: float | None  # free cash flow / net income
+
+    # -- Balance sheet depth --
+    current_ratio: float | None
+    interest_coverage: float | None  # EBIT / interest expense
+
+    # -- Multi-multiple valuation --
+    price_to_book: float | None
+    price_to_fcf: float | None
+
+    # -- Capital allocation (buybacks vs. dilution) --
+    payout_ratio: float | None
+    shares_cagr: float | None  # CAGR of average share count; negative = net buybacks
+
+    # -- Growth consistency --
+    growth_steadiness: float | None  # 0-1, higher = steadier year-over-year growth
+
+
+def _find_row(stmt: pd.DataFrame, *labels: str) -> pd.Series | None:
+    if stmt is None or stmt.empty:
+        return None
+    for label in labels:
+        if label in stmt.index:
+            return stmt.loc[label]
+    return None
+
+
+def _annual_series(stmt: pd.DataFrame, *labels: str) -> pd.Series:
+    """Latest-first yfinance column ordering, flipped to oldest-first."""
+    row = _find_row(stmt, *labels)
+    if row is None:
+        return pd.Series(dtype=float)
+    series = row.dropna()
+    return series[list(series.index)[::-1]] if not series.empty else series
+
+
+def _cagr_from_series(series: pd.Series) -> tuple[float | None, int]:
+    if series is None or len(series) < 2:
+        return None, 0 if series is None else len(series)
+    start, end = float(series.iloc[0]), float(series.iloc[-1])
+    years = len(series) - 1
+    if start <= 0 or end <= 0 or years <= 0:
+        return None, len(series)
+    return (end / start) ** (1 / years) - 1, len(series)
 
 
 def _revenue_cagr(income_stmt: pd.DataFrame) -> tuple[float | None, int]:
     """CAGR of Total Revenue across whatever annual history Yahoo provides
     (usually up to 4 years, occasionally 5)."""
-    if income_stmt is None or income_stmt.empty:
-        return None, 0
-    row = None
-    for label in ("Total Revenue", "TotalRevenue"):
-        if label in income_stmt.index:
-            row = income_stmt.loc[label]
-            break
-    if row is None:
-        return None, 0
+    series = _annual_series(income_stmt, "Total Revenue", "TotalRevenue")
+    return _cagr_from_series(series)
 
-    series = row.dropna()
-    # yfinance columns are period-end dates, most recent first
-    series = series[list(series.index)[::-1]] if not series.empty else series
-    if len(series) < 2:
-        return None, len(series)
 
-    start, end = float(series.iloc[0]), float(series.iloc[-1])
-    years = len(series) - 1
-    if start <= 0 or end <= 0 or years <= 0:
-        return None, len(series)
+def _shares_cagr(income_stmt: pd.DataFrame) -> float | None:
+    """CAGR of average share count -- negative means the company has been net
+    buying back stock, positive means it's been diluting shareholders."""
+    series = _annual_series(income_stmt, "Basic Average Shares", "Diluted Average Shares")
+    cagr, years = _cagr_from_series(series)
+    return cagr if years >= 2 else None
 
-    cagr = (end / start) ** (1 / years) - 1
-    return cagr, len(series)
+
+def _growth_steadiness(income_stmt: pd.DataFrame) -> float | None:
+    """0-1 score for how consistent year-over-year revenue growth has been
+    (vs. lumpy/erratic), based on the coefficient of variation of the
+    year-over-year growth rates. None if there isn't enough history."""
+    series = _annual_series(income_stmt, "Total Revenue", "TotalRevenue")
+    if len(series) < 3:
+        return None
+    values = [float(v) for v in series.values]
+    yoy = [
+        (values[i] / values[i - 1]) - 1
+        for i in range(1, len(values))
+        if values[i - 1] > 0
+    ]
+    if len(yoy) < 2:
+        return None
+    mean = sum(yoy) / len(yoy)
+    variance = sum((r - mean) ** 2 for r in yoy) / len(yoy)
+    stdev = variance ** 0.5
+    return max(0.0, min(1.0, 1 - stdev / (abs(mean) + 0.05)))
+
+
+def _interest_coverage(income_stmt: pd.DataFrame) -> tuple[float | None, float | None, float | None]:
+    """Returns (coverage_ratio, ebit, interest_expense) using the most recent
+    annual column where both are actually reported -- Yahoo sometimes leaves
+    Interest Expense blank for the latest period even when EBIT is present.
+    None coverage if there's no meaningful interest expense (handled as a
+    no-debt-burden special case in scoring)."""
+    ebit_row = _find_row(income_stmt, "EBIT", "Operating Income")
+    interest_row = _find_row(income_stmt, "Interest Expense", "Interest Expense Non Operating")
+    if ebit_row is None or ebit_row.empty or interest_row is None or interest_row.empty:
+        return None, None, None
+    for col in ebit_row.index:
+        ebit = _as_float(ebit_row.get(col))
+        interest = _as_float(interest_row.get(col)) if col in interest_row.index else None
+        if interest is not None:
+            interest = abs(interest)
+        if ebit is not None and interest is not None and interest != 0:
+            return ebit / interest, ebit, interest
+    return None, _as_float(ebit_row.iloc[0]) if not ebit_row.empty else None, None
 
 
 def _dividend_streak(dividends: pd.Series) -> int:
@@ -170,9 +247,20 @@ def build_metrics(data: StockData) -> Metrics:
     free_cashflow = _as_float(info.get("freeCashflow"))
     fcf_to_debt = _fcf_to_debt(free_cashflow, info.get("totalDebt"))
 
+    net_income = _as_float(info.get("netIncomeToCommon"))
+    cash_conversion_ratio = None
+    if free_cashflow is not None and net_income is not None and net_income > 0:
+        cash_conversion_ratio = free_cashflow / net_income
+
+    market_cap = _as_float(info.get("marketCap"))
+    price_to_fcf = market_cap / free_cashflow if market_cap and free_cashflow and free_cashflow > 0 else None
+
+    interest_coverage, _ebit, _interest = _interest_coverage(data.income_stmt)
+
     peer_growths, peer_gms, peer_oms, peer_nms = [], [], [], []
     peer_roes, peer_roas = [], []
     peer_des, peer_pes, peer_divs, peer_fcf_to_debts = [], [], [], []
+    peer_pbs, peer_pfcfs = [], []
     peer_stmts = data.peer_income_stmts or [None] * len(data.peer_info)
     for p, stmt in zip(data.peer_info, peer_stmts):
         peer_gms.append(p.get("grossMargins"))
@@ -189,6 +277,9 @@ def build_metrics(data: StockData) -> Metrics:
         peer_fcf_to_debts.append(_fcf_to_debt(p.get("freeCashflow"), p.get("totalDebt")))
         peer_growth, _ = _revenue_cagr(stmt) if stmt is not None else (None, 0)
         peer_growths.append(peer_growth)
+        peer_pbs.append(p.get("priceToBook"))
+        p_mcap, p_fcf = _as_float(p.get("marketCap")), _as_float(p.get("freeCashflow"))
+        peer_pfcfs.append(p_mcap / p_fcf if p_mcap and p_fcf and p_fcf > 0 else None)
 
     return Metrics(
         ticker=data.ticker,
@@ -230,5 +321,16 @@ def build_metrics(data: StockData) -> Metrics:
         peer_avg_fcf_to_debt=_avg(peer_fcf_to_debts),
         peer_avg_pe_ratio=_avg(peer_pes),
         peer_avg_dividend_yield=_avg(peer_divs),
+        peer_avg_price_to_book=_avg(peer_pbs),
+        peer_avg_price_to_fcf=_avg(peer_pfcfs),
         peer_count=len(data.peer_info),
+        net_income=net_income,
+        cash_conversion_ratio=cash_conversion_ratio,
+        current_ratio=_as_float(info.get("currentRatio")),
+        interest_coverage=interest_coverage,
+        price_to_book=_as_float(info.get("priceToBook")),
+        price_to_fcf=price_to_fcf,
+        payout_ratio=_as_float(info.get("payoutRatio")),
+        shares_cagr=_shares_cagr(data.income_stmt),
+        growth_steadiness=_growth_steadiness(data.income_stmt),
     )
