@@ -1,5 +1,5 @@
-streamlit>=1.32
-yfinance>=0.2.40
-pandas>=2.0
-numpy>=1.24
-altair>=5.0
+streamlit>=1.32,<1.50
+yfinance>=0.2.40,<1.0
+pandas>=2.0,<3.0
+numpy>=1.24,<2.3
+altair>=5.0,<6.0
